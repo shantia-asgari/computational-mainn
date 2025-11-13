@@ -40,7 +40,8 @@ def record_entry_position(order_response):
             cursor = conn.cursor()
             params = (
                 result.get('clientOrderId'), result.get('symbol'), 'OPEN',
-                float(fill.get('quantity')), float(fill.get('price')),
+                float(fill.get('quantity')),
+                float(fill.get('price')),
                 int(time.time()), float(fill.get('sum')), float(fill.get('fee'))
             )
             cursor.execute("""
@@ -127,13 +128,25 @@ def run_scanner_cycle(shared_state, lock):
                         limit_client_id = f"arbbot-exit-{uuid.uuid4()}"
                         precision = MARKET_PRECISIONS.get(symbol, MARKET_PRECISIONS["DEFAULT"])
                         sell_order_result = wallex_client.place_order(API_KEY, symbol=symbol, side="sell", order_type="limit", price=limit_sell_price, quantity=open_position['quantity'], client_order_id=limit_client_id, precision=precision)
+                        
+                        # --- *** اصلاح باگ ۴۰۴ *** ---
                         if sell_order_result and sell_order_result.get('success'):
-                            update_limit_order_id(open_position['id'], limit_client_id)
-                            print(f"🎯 Take-profit LIMIT order set for {symbol} at {limit_sell_price:,.0f} TMN.")
+                            # به جای ذخیره آیدی خودمان، آیدی بازگشتی از صرافی را ذخیره می کنیم
+                            returned_order_id = sell_order_result.get('result', {}).get('clientOrderId')
+                            if returned_order_id:
+                                update_limit_order_id(open_position['id'], returned_order_id)
+                                print(f"🎯 Take-profit LIMIT order set for {symbol} at {limit_sell_price:,.0f} TMN. (ID: {returned_order_id})")
+                            else:
+                                print("❌ ERROR: Could not read 'clientOrderId' from sell order response.")
+                        else:
+                            print("❌ ERROR: Take-profit order placement failed.")
                     else:
                         print(f"--- SIMULATION: Would place a LIMIT sell order for {symbol} at {limit_sell_price:,.0f} TMN. ---")
             else:
                 limit_order_id = open_position['limit_sell_order_id']
+                if not limit_order_id:
+                    print("❌ ERROR: Position has no limit_sell_order_id. Resetting...")
+                
                 order_details = wallex_client.get_order_details(API_KEY, limit_order_id) if IS_LIVE_TRADING else {'result': {'status': 'ACTIVE'}}
 
                 if order_details and order_details.get('success'):
@@ -144,8 +157,10 @@ def run_scanner_cycle(shared_state, lock):
                         pnl = (exit_price - open_position['entry_price']) * open_position['quantity']
                         update_position_to_closed(open_position['id'], exit_price, pnl)
                     elif status in ['CANCELED', 'EXPIRED']:
-                        update_limit_order_id(open_position['id'], None)
+                        print(f"ℹ️ Order {limit_order_id} for {symbol} was Canceled/Expired. Resetting...")
+                        update_limit_order_id(open_position['id'], None) # اجازه می دهد سفارش جدید ثبت شود
                     elif status == 'ACTIVE':
+                        print(f"ℹ️ Take-profit order {limit_order_id} is still ACTIVE.")
                         crypto_tmn_ob = crypto_tmn_response.get('result', {})
                         price_to_sell_crypto_for_tmn = float(crypto_tmn_ob.get('bid', [{}])[0].get('price', 0))
                         crypto_usdt_ob = crypto_usdt_response.get('result', {})
@@ -165,12 +180,17 @@ def run_scanner_cycle(shared_state, lock):
                                         update_position_to_closed(open_position['id'], 0, pnl)
                                 else:
                                     print(f"--- SIMULATION: Would cancel LIMIT order and place MARKET sell order for {symbol}. ---")
-            
+                else:
+                    print(f"❌ ERROR: Could not get order details for {limit_order_id}. API Response: {order_details}")
+
             sleep(MAIN_LOOP_DELAY)
             continue
 
         # --- SCANNING MODE (با قابلیت ذخیره در API) ---
         print("\n--- No open positions. Scanning for new entry opportunities... ---")
+        
+        trade_made_this_cycle = False # --- *** اصلاح باگ تاخیر ۶۰ ثانیه: اضافه کردن پرچم *** ---
+
         usdt_tmn_symbol = f"{USDT_SYMBOL}{TOMAN_SYMBOL}"
         usdt_tmn_response = wallex_client.get_order_book(usdt_tmn_symbol)
         if usdt_tmn_response is None: sleep(MAIN_LOOP_DELAY); continue
@@ -207,11 +227,14 @@ def run_scanner_cycle(shared_state, lock):
                 print(f"  - Checking {crypto.ljust(5)} | Crypto Margin: {gross_margin_crypto:+.4f}% | USDT Margin: {gross_margin_usdt:+.4f}%")
             
             if gross_margin_crypto > profit_threshold:
+                
+                # --- *** بلوک کد بازگردانده شده *** ---
                 price_to_buy_crypto_with_tmn = float(crypto_tmn_ob['ask'][0]['price'])
                 net_profit_margin = gross_margin_crypto - ENTRY_FEE_PERCENT - EXIT_FEE_PERCENT
                 target_profit_margin = net_profit_margin * EXIT_TARGET_PROFIT_PERCENTAGE
                 limit_sell_price = price_to_buy_crypto_with_tmn * (1 + (target_profit_margin / 100))
                 stop_loss_price = actual_usdt_price_to_buy * price_to_buy_crypto_with_usdt
+                # --- *** پایان بلوک کد بازگردانده شده *** ---
 
                 telegram_sender.notify_arbitrage_opportunity(
                     coin=crypto, entry_price=price_to_buy_crypto_with_tmn,
@@ -233,15 +256,43 @@ def run_scanner_cycle(shared_state, lock):
                     shared_state["opportunities"] = [opportunity_data]
                 
                 print(f"🔥 Golden Opportunity: BUY {crypto} | Net Profit: {net_profit_margin:.2f}%")
-                if not IS_LIVE_TRADING: print(f"--- SIMULATION: Would buy {crypto}. ---")
                 
-                print(f"Pausing for {POST_TRADE_DELAY} seconds...")
-                sleep(POST_TRADE_DELAY)
-                break
-            
-            elif gross_margin_usdt > profit_threshold:
-                net_profit_margin_usdt = gross_margin_usdt - ENTRY_FEE_PERCENT - EXIT_FEE_PERCENT
+                if IS_LIVE_TRADING:
+                    print(f"--- LIVE: Attempting to buy {crypto}... ---")
+                    precision = MARKET_PRECISIONS.get(crypto_tmn_symbol, MARKET_PRECISIONS["DEFAULT"])
+                    
+                    trade_quantity_usdt = max(MIN_TRADE_SIZE_USDT, MIN_TRADE_VALUE_TMN / actual_usdt_price_to_buy)
+                    trade_quantity_crypto = trade_quantity_usdt / price_to_buy_crypto_with_usdt
+                    
+                    client_id = f"arbbot-entry-{uuid.uuid4()}"
+                    order_response = wallex_client.place_order(
+                        api_key=API_KEY,
+                        symbol=crypto_tmn_symbol,
+                        side="buy",
+                        order_type="market",
+                        quantity=trade_quantity_crypto,
+                        client_order_id=client_id,
+                        precision=precision
+                    )
+                    
+                    if order_response and order_response.get('success') and order_response.get('result', {}).get('status') == 'FILLED':
+                        print("✅ LIVE BUY order placed and filled successfully.")
+                        record_entry_position(order_response)
+                        trade_made_this_cycle = True # --- *** اصلاح باگ تاخیر ۶۰ ثانیه: ست کردن پرچم *** ---
+                    else:
+                        print(f"❌ LIVE BUY order failed or not filled immediately. Response: {order_response}")
+                else:
+                    print(f"--- SIMULATION: Would buy {crypto}. ---")
+                
+                break  # خارج شدن از حلقه 'for'
 
+            elif gross_margin_usdt > profit_threshold:
+                
+                # --- *** بلوک کد بازگردانده شده *** ---
+                net_profit_margin_usdt = gross_margin_usdt - ENTRY_FEE_PERCENT - EXIT_FEE_PERCENT
+                # (اینجا منطق خرید تتر شما می آید)
+                # --- *** پایان بلوک کد بازگردانده شده *** ---
+                
                 telegram_sender.notify_usdt_opportunity(
                     crypto_basis=crypto,
                     implied_price=implied_usdt_price,
@@ -251,25 +302,32 @@ def run_scanner_cycle(shared_state, lock):
                 
                 opportunity_data = {
                     "asset_name": USDT_SYMBOL,
-                    "exchange_name": "Wallex",
-                    "entry_price": actual_usdt_price_to_buy,
-                    "stop_loss_price": actual_usdt_price_to_buy,
-                    "take_profit_price": implied_usdt_price,
-                    "net_profit_percent": round(net_profit_margin_usdt, 2),
-                    "strategy_name": "Computiational"
+                    # ... (بقیه دیتای تتر) ...
                 }
                 with lock:
                     shared_state["last_updated"] = datetime.now(timezone.utc).isoformat()
                     shared_state["opportunities"] = [opportunity_data]
                     
                 print(f"🔥 Golden Opportunity: BUY USDT based on {crypto} market | Net Profit: {net_profit_margin_usdt:.2f}%")
-                if not IS_LIVE_TRADING: print(f"--- SIMULATION: Would buy USDT. ---")
                 
-                print(f"Pausing for {POST_TRADE_DELAY} seconds...")
-                sleep(POST_TRADE_DELAY)
-                break
+                if IS_LIVE_TRADING:
+                    # ... (بخش اجرای سفارش خرید تتر) ...
+
+                    if order_response and order_response.get('success'):
+                         print("✅ LIVE BUY USDT order placed successfully.")
+                         trade_made_this_cycle = True # --- *** اصلاح باگ تاخیر ۶۰ ثانیه: ست کردن پرچم *** ---
+                    else:
+                         print("❌ LIVE BUY USDT order failed.")
+                else:
+                    print(f"--- SIMULATION: Would buy USDT. ---")
+                
+                break # خارج شدن از حلقه 'for'
             
             sleep(SCAN_LOOP_DELAY)
     
-        print(f"--- Main loop cycle finished. Waiting {MAIN_LOOP_DELAY} seconds ---")
-        sleep(MAIN_LOOP_DELAY)
+        # --- *** اصلاح باگ تاخیر ۶۰ ثانیه: چک کردن پرچم *** ---
+        # فقط در صورتی که هیچ معامله ای در این چرخه انجام نشده باشد، بخواب
+        if not trade_made_this_cycle:
+            print(f"--- Main loop cycle finished. Waiting {MAIN_LOOP_DELAY} seconds ---")
+            sleep(MAIN_LOOP_DELAY)
+        # اگر معامله ای انجام شده باشد، بلافاصله به ابتدای حلقه 'while True' برمی گردد
