@@ -1,7 +1,7 @@
 # config.py
 
 # --- Wallex API Configuration ---
-API_KEY = "15933|BmSQkr4yYw6RcFDILqW5T3zsNT8b5rAfq2mmc92A"
+API_KEY = "17088|lc5ivt0Hele7Bz8OKSydI8Ti3Cc1HYTXBdXoGTTd"
 
 # --- Telegram Configuration ---
 TELEGRAM_BOT_TOKEN = "7435237309:AAEAXXkce1VU8Wk-NqxX1v6VKnSMaydbErs"
@@ -9,7 +9,7 @@ TELEGRAM_GROUP_CHAT_ID = -1002684336789
 TELEGRAM_MESSAGE_THREAD_ID = 6380
 
 # --- TRADING MODE ---
-IS_LIVE_TRADING = False
+IS_LIVE_TRADING = True
 VERBOSE_MODE = True # اگر True باشد، ربات سود محاسبه شده برای تمام ارزها را چاپ میکند
 
 # --- DB Settings ---
@@ -26,7 +26,9 @@ EXIT_TARGET_PROFIT_PERCENTAGE = 0.5 # هدف: کسب ۵۰٪ از شکاف سود
 # --- Smart Precision Dictionary ---
 MARKET_PRECISIONS = {
     "DEFAULT": 5, "TMN_PRICE_DEFAULT": 0,
-    "DOTTMN": 2, "SOLTMN": 5, "ETHTMN": 5, "ATOMTMN": 2, "BNBTMN": 5
+    "DOTTMN": 2, "SOLTMN": 5, "ETHTMN": 5, "ATOMTMN": 2, "BNBTMN": 5,
+    "ADATMN": 1,
+    "LINKTMN": 2  # <-- این مورد اضافه شد
 }
 
 # --- Whitelist & Filters ---
@@ -34,7 +36,7 @@ WHITELIST = ["BTC", "ETH", "SOL", "ADA", "XRP", "DOT", "BNB", "TRX", "LTC", "BCH
 ENTRY_FEE_PERCENT = 0.25  # *** این مقدار به عدد صحیح اصلاح شد ***
 EXIT_FEE_PERCENT = 0.25
 MIN_NET_PROFIT_PERCENT = 0.05
-MIN_TRADE_SIZE_USDT = 3.5
+MIN_TRADE_SIZE_USDT = 0.5
 MIN_TRADE_VALUE_TMN = 50000.0
 TOMAN_SYMBOL = "TMN"
 USDT_SYMBOL = "USDT"
