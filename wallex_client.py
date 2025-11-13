@@ -1,14 +1,30 @@
 # wallex_client.py
 import requests
 import json
+import math  # <-- این ماژول اضافه شد
 from config import MARKET_PRECISIONS
 
 API_BASE_URL = "https://api.wallex.ir/v1"
 
+def _floor_truncate(quantity, precision):
+    """
+    مقدار را به جای گرد کردن، به سمت پایین کوچک می کند.
+    مثال: (1.127, 2) -> 1.12
+    """
+    if precision == 0:
+        return math.floor(quantity)
+    factor = 10 ** precision
+    return math.floor(quantity * factor) / factor
+
 def place_order(api_key, symbol, side, quantity, client_order_id, precision, order_type="market", price=None):
     url = f"{API_BASE_URL}/account/orders"
     headers = {'Content-Type': 'application/json', 'x-api-key': api_key}
-    final_quantity = round(quantity, precision)
+    
+    # --- *** این بخش حیاتی اصلاح شد *** ---
+    # به جای گرد کردن (round)، مقدار را به پایین کوچک می کنیم
+    # این کار از خطای "موجودی ناکافی" در هنگام فروش جلوگیری می کند
+    final_quantity = _floor_truncate(quantity, precision)
+    
     payload = {"symbol": symbol, "side": side.upper(), "type": order_type.upper(), "quantity": str(final_quantity), "client_order_id": client_order_id}
     if order_type.upper() == "LIMIT":
         if price is None:
@@ -17,6 +33,7 @@ def place_order(api_key, symbol, side, quantity, client_order_id, precision, ord
         price_precision = MARKET_PRECISIONS.get("TMN_PRICE_DEFAULT", 0)
         payload['price'] = str(round(price, price_precision))
     
+    # --- *** این خط اصلاح شد (UPPER به upper) *** ---
     print(f"\nPlacing {order_type.upper()} {side.upper()} order for {final_quantity} of {symbol}...")
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=15)
